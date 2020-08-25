@@ -511,7 +511,7 @@ class NRLStorm:
         #Return axis
         if ax != None or return_ax == True: return plot_ax
     
-    def plot_nrl_forecast(self,forecast,track_labels='fhr',cone_days=5,domain="dynamic_forecast",
+    def plot_nrl_forecast(self,forecast,image_path=os.getcwd,track_labels='fhr',cone_days=5,domain="dynamic_forecast",
                           ax=None,return_ax=False,cartopy_proj=None,prop={},map_prop={}):
 
         #Check to ensure the data source is HURDAT
@@ -552,7 +552,7 @@ class NRLStorm:
             track_dict[key] = self.dict[key]
             
         #Plot storm
-        plot_ax = self.plot_obj.plot_storm_nrl(forecast_dict,track_dict,track_labels,cone_days,domain,ax=ax,return_ax=return_ax,prop=prop,map_prop=map_prop)
+        plot_ax = self.plot_obj.plot_storm_nrl(forecast_dict,track_dict,image_path,track_labels,cone_days,domain,ax=ax,return_ax=return_ax,prop=prop,map_prop=map_prop)
  
 
         #Return axis

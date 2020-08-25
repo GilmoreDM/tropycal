@@ -39,7 +39,7 @@ class NRLTrackPlot(TrackPlot):
     def __init__(self):
         super(NRLTrackPlot, self).__init__()
 
-    def plot_storm_nrl(self,forecast,track=None,track_labels='fhr',cone_days=5,domain="dynamic_forecast",ax=None,return_ax=False,prop={},map_prop={}):
+    def plot_storm_nrl(self,forecast,track=None,image_path=os.getcwd(),track_labels='fhr',cone_days=5,domain="dynamic_forecast",ax=None,return_ax=False,prop={},map_prop={}):
         
         r"""
         Creates a plot of the operational NRL forecast track along with observed track data.
@@ -474,7 +474,7 @@ class NRLTrackPlot(TrackPlot):
         if ax != None or return_ax == True:
             return self.ax
         else:
-            plt.savefig(f"{track['id']}_{forecast_date.replace(' ','')}")
+            plt.savefig(f"{image_path}/{track['id']}_{forecast_date.replace(' ','')}")
             plt.close()
  
 

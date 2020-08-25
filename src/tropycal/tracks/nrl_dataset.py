@@ -129,10 +129,16 @@ class NRLTrackDataset:
         pacific_url = kwargs.pop('pacific_url', 'https://www.nhc.noaa.gov/data/hurdat/hurdat2-nepac-1949-2019-042320.txt')
         ibtracs_url = kwargs.pop('ibtracs_url', 'https://www.ncei.noaa.gov/data/international-best-track-archive-for-climate-stewardship-ibtracs/v04r00/access/csv/ibtracs.(basin).list.v04r00.csv')
         ibtracs_mode = kwargs.pop('ibtracs_mode', 'jtwc')
-        storm_id = kwargs.pop('storm','01L')
-        nrlcotc_url = self.get_latest_nrl_data(storm_id)
-        if nrlcotc_url == '': 
+        storm_id = kwargs.pop('storm','')
+        storm_file = kwargs.pop('datafile','')
+        if storm_id != '':
+            nrlcotc_url = self.get_latest_nrl_data(storm_id)
+        elif storm_file != '':
+            self.nrl_time = storm_file.split('.')[1]
+            nrlcotc_url = storm_file
+        else:
             raise MissingData
+        storm_name = kwargs.pop('tc_name','')
         catarina = kwargs.pop('catarina', False)
         ibtracs_hurdat = kwargs.pop('ibtracs_hurdat', False)
         
@@ -147,6 +153,7 @@ class NRLTrackDataset:
         self.pacific_url = str(pacific_url)
         self.ibtracs_url = str(ibtracs_url)
         self.nrlcotc_url = str(nrlcotc_url)
+        self.storm_name = str(storm_name)
         self.source = source
         
         #Modification flags
@@ -245,20 +252,18 @@ class NRLTrackDataset:
         print("--> Starting to read in COAMPS-TC data")
         
         #Quick error check'
-        atl_online = True
-        pac_online = True
+        atl_online = False
+        pac_online = False
         fcheck = "https://fnmocoutgoing.blob.core.windows.net/tctracks/"
 
-        if fcheck not in self.nrlcotc_url:
+        if fcheck in self.nrlcotc_url:
+            atl_online = True
             if "http" in self.nrlcotc_url:
                 raise RuntimeError("URL provided is not via NRL")
-            else:
-                atl_online = False
-        if fcheck not in self.nrlcotc_url:
+        if fcheck in self.nrlcotc_url:
+            pac_online = True
             if "http" in self.nrlcotc_url:
                 raise RuntimeError("URL provided is not via NRL")
-            else:
-                pac_online = False
 
         #Check if basin is valid
         if self.basin.lower() not in ['north_atlantic','east_pacific','both']:
@@ -291,7 +296,7 @@ class NRLTrackDataset:
         current_id = "{basin}{storm_number}{season}".format(basin=content[0][0], storm_number=content[0][1], season=content[0][2][:4])
 
         #add empty entry into dict
-        self.data[current_id] = {'id':current_id,'operational_id':'','name':current_id,'year':int(content[0][2][:4]),'season':int(content[0][2][:4]),'basin':add_basin,'source_info':'NHC Hurricane Database'}
+        self.data[current_id] = {'id':current_id,'operational_id':'','name':self.storm_name,'year':int(content[0][2][:4]),'season':int(content[0][2][:4]),'basin':add_basin,'source_info':'NHC Hurricane Database'}
         self.data[current_id]['source'] = self.source
         self.data[current_id]['run_init'] = self.nrl_time
 
@@ -496,6 +501,7 @@ class NRLTrackDataset:
             Object containing information about the requested storm, and methods for analyzing and plotting the storm.
         """
         
+        print(self.data.keys())
         #Check if storm is str or tuple
         if isinstance(storm, str) == True:
             key = storm
