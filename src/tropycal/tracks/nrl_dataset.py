@@ -8,11 +8,13 @@ import scipy.interpolate as interp
 import scipy.stats as stats
 import urllib
 import warnings
+import time
 from datetime import datetime as dt,timedelta
 #Import other tropycal objects
 from ..plot import Plot
 from .plot import TrackPlot
 from .storm import Storm
+from .nrl_storm import NRLStorm
 from .season import Season
 from ..tornado import *
 
@@ -29,7 +31,10 @@ try:
 except:
     warnings.warn("Warning: Matplotlib is not installed in your python environment. Plotting functions will not work.")
 
-class TrackDataset:
+class MissingData(Exception):
+    pass
+
+class NRLTrackDataset:
     
     r"""
     Creates an instance of a TrackDataset object containing various cyclone data.
@@ -124,6 +129,10 @@ class TrackDataset:
         pacific_url = kwargs.pop('pacific_url', 'https://www.nhc.noaa.gov/data/hurdat/hurdat2-nepac-1949-2019-042320.txt')
         ibtracs_url = kwargs.pop('ibtracs_url', 'https://www.ncei.noaa.gov/data/international-best-track-archive-for-climate-stewardship-ibtracs/v04r00/access/csv/ibtracs.(basin).list.v04r00.csv')
         ibtracs_mode = kwargs.pop('ibtracs_mode', 'jtwc')
+        storm_id = kwargs.pop('storm','01L')
+        nrlcotc_url = self.get_latest_nrl_data(storm_id)
+        if nrlcotc_url == '': 
+            raise MissingData
         catarina = kwargs.pop('catarina', False)
         ibtracs_hurdat = kwargs.pop('ibtracs_hurdat', False)
         
@@ -137,6 +146,7 @@ class TrackDataset:
         self.atlantic_url = str(atlantic_url)
         self.pacific_url = str(pacific_url)
         self.ibtracs_url = str(ibtracs_url)
+        self.nrlcotc_url = str(nrlcotc_url)
         self.source = source
         
         #Modification flags
@@ -155,8 +165,10 @@ class TrackDataset:
             self.__read_hurdat()
         elif source == 'ibtracs':
             self.__read_ibtracs()
+        elif source == 'nrlcotc':
+            self.__read_nrlcotc()
         else:
-            raise RuntimeError("Accepted values for 'source' are 'hurdat' or 'ibtracs'")
+            raise RuntimeError("Accepted values for 'source' are 'hurdat' or 'ibtracs' or 'nrlcotc'")
             
         #Replace ibtracs with hurdat for atl/pac basins
         if source == 'ibtracs' and ibtracs_hurdat == True:
@@ -193,38 +205,68 @@ class TrackDataset:
         #Add dict to store all storm-specific tornado data in
         self.data_tors = {}
     
-    
-    def __read_hurdat(self,override_basin=False):
-        
+    def get_latest_nrl_data(self,storm_id):
         r"""
-        Reads in HURDATv2 data into the Dataset object.
+        Gets latest dataset for the given storm. Assumes forecast model run times every 6 hours.
+        """
+        for hr in [18,12,6,0]:
+            self.nrl_time = time.strftime(f"%Y%m%dT{hr:02}00Z",time.gmtime(time.time()-(time.time() % (6*3600))+1))
+            try:
+                check_url = 'https://fnmocoutgoing.blob.core.windows.net/tctracks/{0}/tracks/CTAZEPS_{1}.{0}'.format(self.nrl_time,storm_id)
+                f = urllib.request.urlopen(check_url)
+                return check_url
+            except Exception as inst:
+                continue
+        return ''
+    
+    def get_nrl_storm_type(self,wspd):
+        r"""
+        Returns storm type for a given wind speed
+        """
+
+        if (wspd <= 33):
+            return 'TD'
+        elif (34 <= wspd <= 63):
+            return 'TS'
+        elif (64 <= wspd):
+            return 'HU'
+        else:
+            return 'XX'
+
+
+    def __read_nrlcotc(self):
+
+        r"""
+        Reads in NRL COAMPS-TC data into the Dataset object.
         """
         
-        #Time duration to read in HURDAT
+        #Time duration to read in COAMPS-TC
         start_time = dt.now()
-        print("--> Starting to read in HURDAT2 data")
+        print("--> Starting to read in COAMPS-TC data")
         
-        #Quick error check
+        #Quick error check'
         atl_online = True
         pac_online = True
-        fcheck = "https://www.nhc.noaa.gov/data/hurdat/"
-        if fcheck not in self.atlantic_url:
-            if "http" in self.atlantic_url:
-                raise RuntimeError("URL provided is not via NHC")
+        fcheck = "https://fnmocoutgoing.blob.core.windows.net/tctracks/"
+
+        if fcheck not in self.nrlcotc_url:
+            if "http" in self.nrlcotc_url:
+                raise RuntimeError("URL provided is not via NRL")
             else:
                 atl_online = False
-        if fcheck not in self.pacific_url:
-            if "http" in self.pacific_url:
-                raise RuntimeError("URL provided is not via NHC")
+        if fcheck not in self.nrlcotc_url:
+            if "http" in self.nrlcotc_url:
+                raise RuntimeError("URL provided is not via NRL")
             else:
                 pac_online = False
-        
+
         #Check if basin is valid
         if self.basin.lower() not in ['north_atlantic','east_pacific','both']:
             raise RuntimeError("Only valid basins are 'north_atlantic', 'east_pacific' or 'both'")
         
-        def read_hurdat(path,flag):
+        def read_nrlcotc(path,flag):
             if flag == True:
+                print(path)
                 f = urllib.request.urlopen(path)
                 content = f.read()
                 content = content.decode("utf-8")
@@ -238,105 +280,103 @@ class TrackDataset:
                 f.close()
             return content
         
-        #read in HURDAT2 file from URL
+        #read in NRL COAMPS-TC file from URL
         if self.basin == 'north_atlantic':
-            content = read_hurdat(self.atlantic_url,atl_online)
+            content = read_nrlcotc(self.nrlcotc_url,atl_online)
         elif self.basin == 'east_pacific':
-            content = read_hurdat(self.pacific_url,pac_online)
-        elif self.basin == 'both':
-            content = read_hurdat(self.atlantic_url,atl_online)
-            content += read_hurdat(self.pacific_url,pac_online)
+            content = read_nrlcotc(self.nrlcotc_url,pac_online)
+        add_basin = 'north_atlantic'
         
         #keep current storm ID for iteration
-        current_id = ""
+        current_id = "{basin}{storm_number}{season}".format(basin=content[0][0], storm_number=content[0][1], season=content[0][2][:4])
+
+        #add empty entry into dict
+        self.data[current_id] = {'id':current_id,'operational_id':'','name':current_id,'year':int(content[0][2][:4]),'season':int(content[0][2][:4]),'basin':add_basin,'source_info':'NHC Hurricane Database'}
+        self.data[current_id]['source'] = self.source
+        self.data[current_id]['run_init'] = self.nrl_time
+
+        #add empty lists
+        for val in ['date','extra_obs','special','type','fhr','lat','lon','vmax','mslp','wmo_basin']:
+            self.data[current_id][val] = []
+        self.data[current_id]['ace'] = 0.0
+
+        special = ''
         
         #iterate through every line
         for line in content:
-
+            
             #Skip if line is empty
             if len(line) < 2: continue
             
-            #identify if this is a header for a storm or content of storm
-            if line[0][0] in ['A','C','E']:
-                
-                #Determine basin
-                add_basin = 'north_atlantic'
-                if line[0][0] == 'C':
-                    add_basin = 'east_pacific'
-                elif line[0][0] == 'E':
-                    add_basin = 'east_pacific'
-                if override_basin == True:
-                    add_basin = 'all'
-                
-                #add empty entry into dict
-                self.data[line[0]] = {'id':line[0],'operational_id':'','name':line[1],'year':int(line[0][4:]),'season':int(line[0][4:]),'basin':add_basin,'source_info':'NHC Hurricane Database'}
-                self.data[line[0]]['source'] = self.source
-                current_id = line[0]
+            #Retrieve important info about storm
+            #yyyymmdd,hhmm,special,storm_type,lat,lon,vmax,mslp = line[0:8]
+            basin, cy, yyyymmddhhnn, sort, tech, tau, lat, lon, vmax, mslp, storm_type = line[0:11]
+            hhmm = yyyymmddhhnn[-4:]
 
-                #add empty lists
-                for val in ['date','extra_obs','special','type','lat','lon','vmax','mslp','wmo_basin']:
-                    self.data[line[0]][val] = []
-                self.data[line[0]]['ace'] = 0.0
+            #if (int(tau) not in [3,12,24,36,48]): continue
+            if (int(tau) in self.data[current_id]['fhr']): continue
+            
+            if (tech != 'C00Z'): continue
+
+            #Parse into format to be entered into dict
+            date = dt.strptime(yyyymmddhhnn,'%Y%m%d%H%M')
+
+            if "N" in lat:
+                lat = float(lat.split("N")[0]) * 1.0/10
+            elif "S" in lat:
+                lat = float(lat.split("N")[0]) * -1.0/10
+            if "W" in lon:
+                lon = float(lon.split("W")[0]) * -1.0/10
+            elif "E" in lon:
+                lon = float(lon.split("E")[0]) * 1.0/10
+            vmax = int(vmax)
+            mslp = int(mslp)
+            
+            #Handle missing data
+            if vmax < 0: vmax = np.nan
+            if mslp < 800: mslp = np.nan
                 
-            #if not a header, enter storm info into its dict entry
+            #Handle off-hour obs
+            if hhmm in ['0000','0600','1200','1800']:
+                self.data[current_id]['extra_obs'].append(0)
             else:
+                self.data[current_id]['extra_obs'].append(1)
+                
 
-                #Retrieve important info about storm
-                yyyymmdd,hhmm,special,storm_type,lat,lon,vmax,mslp = line[0:8]
-                
-                #Parse into format to be entered into dict
-                date = dt.strptime(yyyymmdd+hhmm,'%Y%m%d%H%M')
-                if "N" in lat:
-                    lat = float(lat.split("N")[0])
-                elif "S" in lat:
-                    lat = float(lat.split("N")[0]) * -1.0
-                if "W" in lon:
-                    lon = float(lon.split("W")[0]) * -1.0
-                elif "E" in lon:
-                    lon = float(lon.split("E")[0])
-                vmax = int(vmax)
-                mslp = int(mslp)
-                
-                #Handle missing data
-                if vmax < 0: vmax = np.nan
-                if mslp < 800: mslp = np.nan
-                    
-                #Handle off-hour obs
-                if hhmm in ['0000','0600','1200','1800']:
-                    self.data[current_id]['extra_obs'].append(0)
-                else:
-                    self.data[current_id]['extra_obs'].append(1)
-                    
-                #Fix storm type for cross-dateline storms
-                storm_type = storm_type.replace("ST","HU")
-                storm_type = storm_type.replace("TY","HU")
-                
-                #Append into dict
-                self.data[current_id]['date'].append(date)
-                self.data[current_id]['special'].append(special)
-                self.data[current_id]['type'].append(storm_type)
-                self.data[current_id]['lat'].append(lat)
-                self.data[current_id]['lon'].append(lon)
-                self.data[current_id]['vmax'].append(vmax)
-                self.data[current_id]['mslp'].append(mslp)
-                
-                #Add basin
-                if add_basin == 'north_atlantic':
-                    wmo_agency = 'north_atlantic'
-                elif add_basin == 'east_pacific':
-                    if lon > 0.0:
-                        wmo_agency = 'west_pacific'
-                    else:
-                        wmo_agency = 'east_pacific'
-                else:
+            if storm_type == 'XX':
+                storm_type = self.get_nrl_storm_type(vmax)
+
+            #Fix storm type for cross-dateline storms
+            storm_type = storm_type.replace("ST","HU")
+            storm_type = storm_type.replace("TY","HU")
+            
+            #Append into dict
+            self.data[current_id]['date'].append(date)
+            self.data[current_id]['special'].append(special)
+            self.data[current_id]['type'].append(storm_type)
+            self.data[current_id]['lat'].append(lat)
+            self.data[current_id]['lon'].append(lon)
+            self.data[current_id]['vmax'].append(vmax)
+            self.data[current_id]['mslp'].append(mslp)
+            self.data[current_id]['fhr'].append(int(tau))
+            
+            #Add basin
+            if add_basin == 'north_atlantic':
+                wmo_agency = 'north_atlantic'
+            elif add_basin == 'east_pacific':
+                if lon > 0.0:
                     wmo_agency = 'west_pacific'
-                self.data[current_id]['wmo_basin'].append(wmo_agency)
-                
-                #Calculate ACE & append to storm total
-                if np.isnan(vmax) == False:
-                    ace = (10**-4) * (vmax**2)
-                    if hhmm in ['0000','0600','1200','1800'] and storm_type in ['SS','TS','HU']:
-                        self.data[current_id]['ace'] += np.round(ace,4)
+                else:
+                    wmo_agency = 'east_pacific'
+            else:
+                wmo_agency = 'west_pacific'
+            self.data[current_id]['wmo_basin'].append(wmo_agency)
+            
+            #Calculate ACE & append to storm total
+            if np.isnan(vmax) == False:
+                ace = (10**-4) * (vmax**2)
+                if hhmm in ['0000','0600','1200','1800'] and storm_type in ['SS','TS','HU']:
+                    self.data[current_id]['ace'] += np.round(ace,4)
         
         #Account for operationally unnamed storms
         current_year = 0
@@ -395,542 +435,11 @@ class TrackDataset:
         #Determine time elapsed
         time_elapsed = dt.now() - start_time
         tsec = str(round(time_elapsed.total_seconds(),2))
-        print(f"--> Completed reading in HURDAT2 data ({tsec} seconds)")
-    
-    
-    def __read_btk(self):
-        
-        r"""
-        Reads in best track data into the Dataset object.
-        """
-
-        #Time duration to read in best track
-        start_time = dt.now()
-        print("--> Starting to read in best track data")
-
-        #Get range of years missing
-        start_year = self.data[([k for k in self.data.keys()])[-1]]['year'] + 1
-        end_year = (dt.now()).year
-
-        #Get list of files in online directory
-        use_ftp = False
-        try:
-            urlpath = urllib.request.urlopen('https://ftp.nhc.noaa.gov/atcf/btk/')
-            string = urlpath.read().decode('utf-8')
-        except:
-            use_ftp = True
-            urlpath = urllib.request.urlopen('ftp://ftp.nhc.noaa.gov/atcf/btk/')
-            string = urlpath.read().decode('utf-8')
-
-        #Get relevant filenames from directory
-        files = []
-        for iyear in range(start_year,end_year+1):
-            if self.basin == 'north_atlantic':
-                search_pattern = f'bal[01234][0123456789]{iyear}.dat'
-            elif self.basin == 'east_pacific':
-                search_pattern = f'b[ec]p[01234][0123456789]{iyear}.dat'
-            elif self.basin == 'both':
-                search_pattern = f'b[aec][lp][01234][0123456789]{iyear}.dat'
-
-            pattern = re.compile(search_pattern)
-            filelist = pattern.findall(string)
-            for filename in filelist:
-                if filename not in files: files.append(filename)
-
-        #For each file, read in file content and add to hurdat dict
-        for file in files:
-
-            #Get file ID
-            stormid = ((file.split(".dat")[0])[1:]).upper()
-
-            #Determine basin
-            add_basin = 'north_atlantic'
-            if stormid[0] == 'C':
-                add_basin = 'east_pacific'
-            elif stormid[0] == 'E':
-                add_basin = 'east_pacific'
-
-            #add empty entry into dict
-            self.data[stormid] = {'id':stormid,'operational_id':stormid,'name':'','year':int(stormid[4:8]),'season':int(stormid[4:8]),'basin':add_basin,'source_info':'NHC Hurricane Database','source_method':"NHC's Automated Tropical Cyclone Forecasting System (ATCF)",'source_url':"https://ftp.nhc.noaa.gov/atcf/btk/"}
-            self.data[stormid]['source'] = self.source
-
-            #add empty lists
-            for val in ['date','extra_obs','special','type','lat','lon','vmax','mslp','wmo_basin']:
-                self.data[stormid][val] = []
-            self.data[stormid]['ace'] = 0.0
-
-            #Read in file
-            if use_ftp == True:
-                url = f"ftp://ftp.nhc.noaa.gov/atcf/btk/{file}"
-            else:
-                url = f"https://ftp.nhc.noaa.gov/atcf/btk/{file}"
-            f = urllib.request.urlopen(url)
-            content = f.read()
-            content = content.decode("utf-8")
-            content = content.split("\n")
-            content = [(i.replace(" ","")).split(",") for i in content]
-            f.close()
-
-            #iterate through file lines
-            for line in content:
-
-                if len(line) < 28: continue
-
-                #Get date of obs
-                date = dt.strptime(line[2],'%Y%m%d%H')
-                if date.hour not in [0,6,12,18]: continue
-
-                #Ensure obs aren't being repeated
-                if date in self.data[stormid]['date']: continue
-
-                #Get latitude into number
-                btk_lat_temp = line[6].split("N")[0]
-                btk_lat = float(btk_lat_temp) * 0.1
-
-                #Get longitude into number
-                if "W" in line[7]:
-                    btk_lon_temp = line[7].split("W")[0]
-                    btk_lon = float(btk_lon_temp) * -0.1
-                elif "E" in line[7]:
-                    btk_lon_temp = line[7].split("E")[0]
-                    btk_lon = float(btk_lon_temp) * 0.1
-
-                #Get other relevant variables
-                btk_wind = int(line[8])
-                btk_mslp = int(line[9])
-                btk_type = line[10]
-                name = line[27]
-
-                #Replace with NaNs
-                if btk_wind > 250 or btk_wind < 10: btk_wind = np.nan
-                if btk_mslp > 1040 or btk_mslp < 800: btk_mslp = np.nan
-
-                #Add extra obs
-                self.data[stormid]['extra_obs'].append(0)
-
-                #Append into dict
-                self.data[stormid]['date'].append(date)
-                self.data[stormid]['special'].append('')
-                self.data[stormid]['type'].append(btk_type)
-                self.data[stormid]['lat'].append(btk_lat)
-                self.data[stormid]['lon'].append(btk_lon)
-                self.data[stormid]['vmax'].append(btk_wind)
-                self.data[stormid]['mslp'].append(btk_mslp)
-                
-                #Add basin
-                if self.basin == 'north_atlantic':
-                    wmo_agency = 'north_atlantic'
-                elif self.basin == 'east_pacific':
-                    if btk_lon > 0.0:
-                        wmo_agency = 'west_pacific'
-                    else:
-                        wmo_agency = 'east_pacific'
-                else:
-                    wmo_agency = 'west_pacific'
-                self.data[stormid]['wmo_basin'].append(wmo_agency)
-
-                #Calculate ACE & append to storm total
-                if np.isnan(btk_wind) == False:
-                    ace = (10**-4) * (btk_wind**2)
-                    if btk_type in ['SS','TS','HU']:
-                        self.data[stormid]['ace'] += np.round(ace,4)
-
-            #Add storm name
-            self.data[stormid]['name'] = name
-
-        #Determine time elapsed
-        time_elapsed = dt.now() - start_time
-        tsec = str(round(time_elapsed.total_seconds(),2))
-        print(f"--> Completed reading in best track data ({tsec} seconds)")
-
-        
-    def __read_ibtracs(self):
-        
-        r"""
-        Reads in ibtracs data into the Dataset object.
-        """
-
-        #Time duration to read in ibtracs
-        start_time = dt.now()
-        print("--> Starting to read in ibtracs data")
-        
-        #Quick error check
-        ibtracs_online = True
-        fcheck = "https://www.ncei.noaa.gov/data/international-best-track-archive-for-climate-stewardship-ibtracs/"
-        if fcheck not in self.ibtracs_url:
-            if "http" in self.ibtracs_url:
-                raise RuntimeError("URL provided is not via NCEI")
-            else:
-                ibtracs_online = False
-
-        #convert to ibtracs basin
-        basin_convert = {'all':'ALL',
-                         'east_pacific':'EP',
-                         'north_atlantic':'NA',
-                         'north_indian':'NI',
-                         'south_atlantic':'SA',
-                         'south_indian':'SI',
-                         'south_pacific':'SP',
-                         'west_pacific':'WP'}
-        ibtracs_basin = basin_convert.get(self.basin,'')
-        
-        #read in ibtracs file
-        if ibtracs_online == True:
-            path = self.ibtracs_url.replace("(basin)",ibtracs_basin)
-            f = urllib.request.urlopen(path)
-            content = f.read()
-            content = content.decode("utf-8")
-            content = content.split("\n")
-            content = [(i.replace(" ","")).split(",") for i in content]
-            f.close()
+        if len(self.data[key]['date']) < 2:
+            print(f"Exiting: Not enough observations to create a storm track for {key}")
+            raise MissingData
         else:
-            f = open(self.ibtracs_url,"r")
-            content = f.readlines()
-            content = [(i.replace(" ","")).split(",") for i in content]
-            f.close()
-
-        #Initialize empty dict for neumann data
-        neumann = {}
-        
-        #ibtracs ID to jtwc ID mapping
-        map_all_id = {}
-        map_id = {}
-        
-        for line in content[2:]:
-            
-            #LANDFALL	IFLAG	USA_AGENCY	USA_ATCF_ID	USA_LAT	USA_LON	USA_RECORD	USA_STATUS	USA_WIND	USA_PRES
-
-
-            if len(line) < 150: continue
-            #sid, year, adv_number, basin, subbasin, name, time, wmo_type, wmo_lat, wmo_lon, wmo_vmax, wmo_mslp, agency, track_type, dist_land = line[:15]
-            
-            ibtracs_id, year, adv_number, basin, subbasin, name, time, wmo_type, wmo_lat, wmo_lon, wmo_vmax, wmo_mslp, agency, track_type, dist_land, dist_landfall, iflag, usa_agency, sid, lat, lon, special, stype, vmax, mslp = line[:25]
-            
-            date = dt.strptime(time,'%Y-%m-%d%H:%M:00')
-            
-            #Fix name to be consistent with HURDAT
-            if name == 'NOT_NAMED': name = 'UNNAMED'
-            if name[-1] == '-': name = name[:-1]
-
-            #Add storm to list of keys
-            if self.ibtracs_mode == 'wmo' and ibtracs_id not in self.data.keys():
-
-                #add empty entry into dict
-                self.data[ibtracs_id] = {'id':sid,'operational_id':'','name':name,'year':date.year,'season':int(year),'basin':self.basin}
-                self.data[ibtracs_id]['source'] = self.source
-                self.data[ibtracs_id]['source_info'] = 'World Meteorological Organization (official)'
-                self.data[ibtracs_id]['notes'] = "'vmax' = wind converted to 1-minute using the 0.88 conversion factor. 'vmax_orig' = original vmax as assessed by its respective WMO agency."
-
-                #add empty lists
-                for val in ['date','extra_obs','special','type','lat','lon','vmax','vmax_orig','mslp','wmo_basin']:
-                    self.data[ibtracs_id][val] = []
-                self.data[ibtracs_id]['ace'] = 0.0
-                
-            elif sid != '' and ibtracs_id not in map_all_id.keys():
-                
-                #ID entry method to use
-                use_id = sid
-                
-                #Add id to list
-                map_all_id[ibtracs_id] = sid
-
-                #add empty entry into dict
-                self.data[use_id] = {'id':sid,'operational_id':'','name':name,'year':date.year,'season':int(year),'basin':self.basin}
-                self.data[use_id]['source'] = self.source
-                self.data[use_id]['source_info'] = 'Joint Typhoon Warning Center (unofficial)'
-                if self.neumann == True: self.data[use_id]['source_info'] += '& Charles Neumann reanalysis for South Hemisphere storms'
-                current_id = use_id
-
-                #add empty lists
-                for val in ['date','extra_obs','special','type','lat','lon','vmax','mslp',
-                            'wmo_type','wmo_lat','wmo_lon','wmo_vmax','wmo_mslp','wmo_basin']:
-                    self.data[use_id][val] = []
-                self.data[use_id]['ace'] = 0.0
-
-            #Get neumann data for storms containing it
-            if self.neumann == True:
-                neumann_lat, neumann_lon, neumann_type, neumann_vmax, neumann_mslp = line[141:146]
-                if neumann_lat != "" and neumann_lon != "":
-                    
-                    #Add storm to list of keys
-                    if ibtracs_id not in neumann.keys():
-                        neumann[ibtracs_id] = {'id':sid,'operational_id':'','name':name,'year':date.year,'season':int(year),'basin':self.basin}
-                        neumann[ibtracs_id]['source'] = self.source
-                        neumann[ibtracs_id]['source_info'] = 'Joint Typhoon Warning Center (unofficial) & Charles Neumann reanalysis for South Hemisphere storms'
-                        for val in ['date','extra_obs','special','type','lat','lon','vmax','mslp','wmo_basin']:
-                            neumann[ibtracs_id][val] = []
-                        neumann[ibtracs_id]['ace'] = 0.0
-                    
-                    #Retrieve data
-                    neumann_date = dt.strptime(time,'%Y-%m-%d%H:%M:00')
-                    neumann_lat = float(wmo_lat)
-                    neumann_lon = float(wmo_lon)
-                    neumann_vmax = np.nan if neumann_vmax == "" else int(neumann_vmax)
-                    neumann_mslp = np.nan if neumann_mslp == "" else int(neumann_mslp)
-                    if neumann_type == 'TC':
-                        if neumann_vmax < 34:
-                            neumann_type = 'TD'
-                        elif neumann_vmax < 64:
-                            neumann_type = 'TS'
-                        else:
-                            neumann_type = 'HU'
-                    elif neumann_type == 'MM' or neumann_type == '':
-                        neumann_type = 'LO'
-                    
-                    neumann[ibtracs_id]['date'].append(neumann_date)
-                    neumann[ibtracs_id]['special'].append(special)
-
-                    neumann[ibtracs_id]['type'].append(neumann_type)
-                    neumann[ibtracs_id]['lat'].append(neumann_lat)
-                    neumann[ibtracs_id]['lon'].append(neumann_lon)
-                    neumann[ibtracs_id]['vmax'].append(neumann_vmax)
-                    neumann[ibtracs_id]['mslp'].append(neumann_mslp)
-                    
-                    hhmm = neumann_date.strftime('%H%M')
-                    if hhmm in ['0000','0600','1200','1800']:
-                        neumann[ibtracs_id]['extra_obs'].append(0)
-                    else:
-                        neumann[ibtracs_id]['extra_obs'].append(1)
-                    
-                    #Edit basin
-                    basin_reverse = {v: k for k, v in basin_convert.items()}
-                    wmo_basin = basin_reverse.get(basin,'')
-                    if subbasin in ['WA','EA']:
-                        wmo_basin = 'australia'
-                    neumann[ibtracs_id]['wmo_basin'].append(wmo_basin)
-                    
-                    #Calculate ACE & append to storm total
-                    if np.isnan(neumann_vmax) == False:
-                        ace = (10**-4) * (neumann_vmax**2)
-                        if hhmm in ['0000','0600','1200','1800'] and neumann_type in ['SS','TS','HU']:
-                            neumann[ibtracs_id]['ace'] += np.round(ace,4)
-                        
-            #Skip missing entries
-            if self.ibtracs_mode == 'wmo':
-                if wmo_lat == "" or wmo_lon == "":
-                    continue
-                if agency == "": continue
-            else:
-                if lat == "" or lon == "":
-                    continue
-                if usa_agency == "" and track_type != "PROVISIONAL": continue
-            
-            
-            #map JTWC to ibtracs ID (for neumann replacement)
-            if self.neumann == True:
-                if ibtracs_id not in map_id.keys():
-                    map_id[ibtracs_id] = sid
-            
-            #Handle WMO mode
-            if self.ibtracs_mode == 'wmo':
-                
-                #Retrieve data
-                date = dt.strptime(time,'%Y-%m-%d%H:%M:00')
-                dist_land = int(dist_land)
-
-                #Properly format WMO variables
-                wmo_lat = float(wmo_lat)
-                wmo_lon = float(wmo_lon)
-                wmo_vmax = np.nan if wmo_vmax == "" else int(wmo_vmax)
-                wmo_mslp = np.nan if wmo_mslp == "" else int(wmo_mslp)
-                
-                #Edit basin
-                basin_reverse = {v: k for k, v in basin_convert.items()}
-                wmo_basin = basin_reverse.get(basin,'')
-                if subbasin in ['WA','EA']:
-                    wmo_basin = 'australia'
-                self.data[ibtracs_id]['wmo_basin'].append(wmo_basin)
-                
-                #Account for wind discrepancy
-                if wmo_basin not in ['north_atlantic','east_pacific'] and np.isnan(wmo_vmax) == False:
-                    jtwc_vmax = int(wmo_vmax / 0.88)
-                else:
-                    if np.isnan(wmo_vmax) == False:
-                        jtwc_vmax = int(wmo_vmax + 0.0)
-                    else:
-                        jtwc_vmax = np.nan
-                
-                #Convert storm type from ibtracs to hurdat style
-                """
-                DS - Disturbance
-                TS - Tropical
-                ET - Extratropical
-                SS - Subtropical
-                NR - Not reported
-                MX - Mixture (contradicting nature reports from different agencies)
-                """
-                if wmo_type == "DS":
-                    stype = "LO"
-                elif wmo_type == "TS":
-                    if np.isnan(jtwc_vmax) == True:
-                        stype = 'LO'
-                    elif jtwc_vmax < 34:
-                        stype = 'TD'
-                    elif jtwc_vmax < 64:
-                        stype = 'TS'
-                    else:
-                        stype = 'HU'
-                elif wmo_type == 'SS':
-                    if np.isnan(jtwc_vmax) == True:
-                        stype = 'LO'
-                    elif jtwc_vmax < 34:
-                        stype = 'SD'
-                    else:
-                        stype = 'SS'
-                elif wmo_type in ['ET','MX']:
-                    wmo_type = 'EX'
-                else:
-                    stype = 'LO'
-
-                #Handle missing data
-                if wmo_vmax < 0: wmo_vmax = np.nan
-                if wmo_mslp < 800: wmo_mslp = np.nan
-
-                self.data[ibtracs_id]['date'].append(date)
-                self.data[ibtracs_id]['special'].append(special)
-
-                self.data[ibtracs_id]['type'].append(stype)
-                self.data[ibtracs_id]['lat'].append(wmo_lat)
-                self.data[ibtracs_id]['lon'].append(wmo_lon)
-                self.data[ibtracs_id]['vmax'].append(jtwc_vmax)
-                self.data[ibtracs_id]['vmax_orig'].append(wmo_vmax)
-                self.data[ibtracs_id]['mslp'].append(wmo_mslp)
-
-                hhmm = date.strftime('%H%M')
-                if hhmm in ['0000','0600','1200','1800']:
-                    self.data[ibtracs_id]['extra_obs'].append(0)
-                else:
-                    self.data[ibtracs_id]['extra_obs'].append(1)
-
-                #Calculate ACE & append to storm total
-                if np.isnan(jtwc_vmax) == False:
-                    ace = (10**-4) * (jtwc_vmax**2)
-                    if hhmm in ['0000','0600','1200','1800'] and stype in ['SS','TS','HU']:
-                        self.data[ibtracs_id]['ace'] += np.round(ace,4)
-                
-            #Handle non-WMO mode
-            else:
-                if sid == '': continue
-                sid = map_all_id.get(ibtracs_id)
-
-                #Retrieve data
-                date = dt.strptime(time,'%Y-%m-%d%H:%M:00')
-                dist_land = int(dist_land)
-
-                #Properly format WMO variables
-                wmo_lat = float(wmo_lat)
-                wmo_lon = float(wmo_lon)
-                wmo_vmax = np.nan if wmo_vmax == "" else int(wmo_vmax)
-                wmo_mslp = np.nan if wmo_mslp == "" else int(wmo_mslp)
-
-                #Properly format hurdat-style variables
-                lat = float(lat)
-                lon = float(lon)
-                vmax = np.nan if vmax == "" else int(vmax)
-                mslp = np.nan if mslp == "" else int(mslp)
-
-                #Convert storm type from ibtracs to hurdat style
-                if stype == "ST" or stype == "TY":
-                    stype = "HU"
-                elif stype == "":
-                    if wmo_type == 'TS':
-                        if vmax < 34:
-                            stype = 'TD'
-                        elif vmax < 64:
-                            stype = 'TS'
-                        else:
-                            stype = 'HU'
-                    elif wmo_type == 'SS':
-                        if vmax < 34:
-                            stype = 'SD'
-                        else:
-                            stype = 'SS'
-                    elif wmo_type in ['ET','MX']:
-                        wmo_type = 'EX'
-                    elif stype == 'DS':
-                        stype = 'LO'
-                    else:
-                        if np.isnan(vmax) == True:
-                            stype = 'LO'
-                        elif vmax < 34:
-                            stype = 'TD'
-                        elif vmax < 64:
-                            stype = 'TS'
-                        else:
-                            stype = 'HU'
-
-                #Handle missing data
-                if vmax < 0: vmax = np.nan
-                if mslp < 800: mslp = np.nan
-
-                self.data[sid]['date'].append(date)
-                self.data[sid]['special'].append(special)
-
-                self.data[sid]['wmo_type'].append(wmo_type)
-                self.data[sid]['wmo_lat'].append(wmo_lat)
-                self.data[sid]['wmo_lon'].append(wmo_lon)
-                self.data[sid]['wmo_vmax'].append(wmo_vmax)
-                self.data[sid]['wmo_mslp'].append(wmo_mslp)
-
-                self.data[sid]['type'].append(stype)
-                self.data[sid]['lat'].append(lat)
-                self.data[sid]['lon'].append(lon)
-                self.data[sid]['vmax'].append(vmax)
-                self.data[sid]['mslp'].append(mslp)
-
-                #Edit basin
-                basin_reverse = {v: k for k, v in basin_convert.items()}
-                wmo_basin = basin_reverse.get(basin,'')
-                if subbasin in ['WA','EA']:
-                    wmo_basin = 'australia'
-                self.data[sid]['wmo_basin'].append(wmo_basin)
-
-                hhmm = date.strftime('%H%M')
-                if hhmm in ['0000','0600','1200','1800']:
-                    self.data[sid]['extra_obs'].append(0)
-                else:
-                    self.data[sid]['extra_obs'].append(1)
-
-                #Calculate ACE & append to storm total
-                if np.isnan(vmax) == False:
-                    ace = (10**-4) * (vmax**2)
-                    if hhmm in ['0000','0600','1200','1800'] and stype in ['SS','TS','HU']:
-                        self.data[sid]['ace'] += np.round(ace,4)
-                    
-        #Remove empty entries
-        all_keys = [k for k in self.data.keys()]
-        for key in all_keys:
-            if len(self.data[key]['lat']) == 0:
-                del(self.data[key])
-        
-        #Replace neumann entries
-        if self.neumann == True:
-            
-            #iterate through every neumann entry
-            for key in neumann.keys():
-                
-                #get corresponding JTWC ID
-                jtwc_id = map_id.get(key,'')
-                if jtwc_id == '': continue
-                
-                #plug dict entry
-                old_entry = self.data[jtwc_id]
-                self.data[jtwc_id] = neumann[key]
-                
-                #replace id
-                self.data[jtwc_id]['id'] = jtwc_id
-                
-        #Fix cyclone Catarina, if specified & requested
-        all_keys = [k for k in self.data.keys()]
-        if '2004086S29318' in all_keys and self.catarina == True:
-            self.data['2004086S29318'] = cyclone_catarina()
-        elif 'AL502004' in all_keys and self.catarina == True:
-            self.data['AL502004'] = cyclone_catarina()
-        
-        #Determine time elapsed
-        time_elapsed = dt.now() - start_time
-        tsec = str(round(time_elapsed.total_seconds(),2))
-        print(f"--> Completed reading in ibtracs data ({tsec} seconds)")
+            print(f"--> Completed reading in COAMPS-TC data ({tsec} seconds)")
             
             
     def get_storm_id(self,storm):
@@ -967,14 +476,14 @@ class TrackDataset:
                 
         #return key, or list of keys
         if len(keys_use) == 1: keys_use = keys_use[0]
-        if len(keys_use) == 0: raise RuntimeError("Storm not found")
+        if len(keys_use) == 0: raise RuntimeError("NRLStorm not found")
         return keys_use
     
     
     def get_storm(self,storm):
         
         r"""
-        Retrieves a Storm object for the requested storm.
+        Retrieves a NRLStorm object for the requested storm.
         
         Parameters
         ----------
@@ -983,7 +492,7 @@ class TrackDataset:
         
         Returns
         -------
-        tropycal.tracks.Storm
+        tropycal.tracks.NRLStorm
             Object containing information about the requested storm, and methods for analyzing and plotting the storm.
         """
         
@@ -993,7 +502,7 @@ class TrackDataset:
         elif isinstance(storm, tuple) == True:
             key = self.get_storm_id((storm[0],storm[1]))
         else:
-            raise RuntimeError("Storm must be a string (e.g., 'AL052019') or tuple (e.g., ('Matthew',2016)).")
+            raise RuntimeError("NRLStorm must be a string (e.g., 'AL052019') or tuple (e.g., ('Matthew',2016)).")
         
         #Retrieve key of given storm
         if isinstance(key, str) == True:
@@ -1001,11 +510,11 @@ class TrackDataset:
             #Check to see if tornado data exists for this storm
             if np.max(self.keys_tors) == 1:
                 if key in self.data_tors.keys():
-                    return Storm(self.data[key],{'data':self.data_tors[key],'dist_thresh':self.tornado_dist_thresh})
+                    return NRLStorm(self.data[key],{'data':self.data_tors[key],'dist_thresh':self.tornado_dist_thresh})
                 else:
-                    return Storm(self.data[key])
+                    return NRLStorm(self.data[key])
             else:
-                return Storm(self.data[key])
+                return NRLStorm(self.data[key])
         else:
             error_message = ''.join([f"\n{i}" for i in key])
             error_message = f"Multiple IDs were identified for the requested storm. Choose one of the following storm IDs and provide it as the 'storm' argument instead of a tuple:{error_message}"
@@ -1765,7 +1274,7 @@ class TrackDataset:
         ax.set_xlim(julian_start[4],julian[-1])
         
         #Format plot title by category
-        category_names = {'ts':'Tropical Storm','c1':'Category 1','c2':'Category 2','c3':'Category 3','c4':'Category 4','c5':'Category 5'}
+        category_names = {'ts':'Tropical NRLStorm','c1':'Category 1','c2':'Category 2','c3':'Category 3','c4':'Category 4','c5':'Category 5'}
         if cat == 0:
             add_str = "Tropical Cyclone"
         else:
@@ -1906,7 +1415,7 @@ class TrackDataset:
         Parameters
         ----------
         storm : str or tuple
-            Storm to plot. Can be either string of storm ID (e.g., "AL052019"), or tuple with storm name and year (e.g., ("Matthew",2016)).
+            NRLStorm to plot. Can be either string of storm ID (e.g., "AL052019"), or tuple with storm name and year (e.g., ("Matthew",2016)).
         year_range : list or tuple
             List or tuple representing the start and end years (e.g., (1950,2018)). Default is the start and end of dataset.
         return_dict : bool
@@ -1972,7 +1481,7 @@ class TrackDataset:
             elif isinstance(storm, tuple) == True:
                 storm = self.get_storm_id((storm[0],storm[1]))
             else:
-                raise RuntimeError("Storm must be a string (e.g., 'AL052019') or tuple (e.g., ('Matthew',2016)).")
+                raise RuntimeError("NRLStorm must be a string (e.g., 'AL052019') or tuple (e.g., ('Matthew',2016)).")
                 
             #Plot storm
             storm_data = self.data[storm]
@@ -2284,7 +1793,7 @@ class TrackDataset:
         Parameters
         ----------
         storm : str or tuple
-            Storm to rank seasons against. Can be either string of storm ID (e.g., "AL052019"), or tuple with storm name and year (e.g., ("Matthew",2016)).
+            NRLStorm to rank seasons against. Can be either string of storm ID (e.g., "AL052019"), or tuple with storm name and year (e.g., ("Matthew",2016)).
         year_range : list or tuple
             List or tuple representing the start and end years (e.g., (1950,2018)). Default is 1950 through the last year in the dataset.
         
@@ -2320,7 +1829,7 @@ class TrackDataset:
         elif isinstance(storm, tuple) == True:
             storm = self.get_storm_id((storm[0],storm[1]))
         else:
-            raise RuntimeError("Storm must be a string (e.g., 'AL052019') or tuple (e.g., ('Matthew',2016)).")
+            raise RuntimeError("NRLStorm must be a string (e.g., 'AL052019') or tuple (e.g., ('Matthew',2016)).")
             
         #Get ACE for this storm
         storm_data = self.data[storm]
@@ -2784,11 +2293,11 @@ class TrackDataset:
         dist_thresh : int
             Distance threshold (in kilometers) from the tropical cyclone track over which to attribute tornadoes to the TC. Default is 1000 km.
         tornado_path : str
-            Source to read tornado data from. Default is "spc", which reads from the online Storm Prediction Center (SPC) 1950-present tornado database. Can change this to a local file.
+            Source to read tornado data from. Default is "spc", which reads from the online NRLStorm Prediction Center (SPC) 1950-present tornado database. Can change this to a local file.
         
         Notes
         -----
-        If you intend on analyzing tornadoes for multiple tropical cyclones using a Storm object, it is recommended to run this function first to avoid the need to re-read the entire tornado database for each Storm object.
+        If you intend on analyzing tornadoes for multiple tropical cyclones using a NRLStorm object, it is recommended to run this function first to avoid the need to re-read the entire tornado database for each NRLStorm object.
         """
         
         #Check to ensure data source is over North Atlantic
@@ -2828,7 +2337,7 @@ class TrackDataset:
         Parameters
         ----------
         storms : list or str
-            Storm(s) for which to plot motion-relative tornado data for. Can be either a list of storm IDs/tuples for which to create a composite of, or a string "all" for all storms containing tornado data.
+            NRLStorm(s) for which to plot motion-relative tornado data for. Can be either a list of storm IDs/tuples for which to create a composite of, or a string "all" for all storms containing tornado data.
         mag_thresh : int
             Minimum threshold for tornado rating.
         return_ax : bool
@@ -2914,8 +2423,8 @@ class TrackDataset:
         
         #Labels
         ax.set_aspect('equal', 'box')
-        ax.set_xlabel('Left/Right of Storm Heading (km)',fontsize=13)
-        ax.set_ylabel('Behind/Ahead of Storm Heading (km)',fontsize=13)
+        ax.set_xlabel('Left/Right of NRLStorm Heading (km)',fontsize=13)
+        ax.set_ylabel('Behind/Ahead of NRLStorm Heading (km)',fontsize=13)
         ax.set_title(f'Composite motion-relative tornadoes\nMin threshold: EF-{mag_thresh} | n={num_storms} storms',fontsize=14,fontweight='bold')
         ax.tick_params(axis='both', which='major', labelsize=11.5)
         

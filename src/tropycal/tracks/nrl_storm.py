@@ -10,6 +10,7 @@ import warnings
 from datetime import datetime as dt,timedelta
 import requests
 
+from .nrl_plot import NRLTrackPlot
 from .plot import TrackPlot
 from ..tornado import *
 from ..recon import *
@@ -34,7 +35,7 @@ try:
 except:
     warnings.warn("Warning: Matplotlib is not installed in your python environment. Plotting functions will not work.")
 
-class Storm:
+class NRLStorm:
     
     r"""
     Initializes an instance of Storm, retrieved via ``TrackDataset.get_storm()``.
@@ -388,14 +389,14 @@ class Storm:
         """
         
         #Check to ensure the data source is HURDAT
-        if self.source != "hurdat":
-            raise RuntimeError("Error: NHC data can only be accessed when HURDAT is used as the data source.")
+        if self.source != "nrlcotc":
+            raise RuntimeError("Error: NRL data can only be accessed when NRLCOTC is used as the data source.")
         
         #Create instance of plot object
         try:
             self.plot_obj
         except:
-            self.plot_obj = TrackPlot()
+            self.plot_obj = NRLTrackPlot()
         
         #Create cartopy projection
         if cartopy_proj == None:
@@ -405,22 +406,18 @@ class Storm:
                 self.plot_obj.create_cartopy(proj='PlateCarree',central_longitude=0.0)
             
         #Get forecasts dict saved into storm object, if it hasn't been already
-        try:
-            self.forecast_dict
-        except:
-            self.get_operational_forecasts()
+        self.get_operational_forecasts()
 
         #Get all NHC forecast entries
-        nhc_forecasts = self.forecast_dict['OFCL']
-        carq_forecasts = self.forecast_dict['CARQ']
+        nrl_forecasts = self.forecast_dict['COTC']
+
 
         #Get list of all NHC forecast initializations
-        nhc_forecast_init = [k for k in nhc_forecasts.keys()]
-        carq_forecast_init = [k for k in carq_forecasts.keys()]
+        nrl_forecast_init = [k for k in nrl_forecasts.keys()]
 
         #Find closest matching time to the provided forecast date, or time
         if isinstance(forecast,int) == True:
-            forecast_dict = nhc_forecasts[nhc_forecast_init[forecast-1]]
+            forecast_dict = nrl_forecasts[nrl_forecast_init[forecast-1]]
             advisory_num = forecast+0
         elif isinstance(forecast,dt) == True:
             nhc_forecast_init_dt = [dt.strptime(k,'%Y%m%d%H') for k in nhc_forecast_init]
@@ -507,12 +504,61 @@ class Storm:
         #Add other info to forecast dict
         forecast_dict['advisory_num'] = advisory_num
         forecast_dict['basin'] = self.basin
-
+        
         #Plot storm
         plot_ax = self.plot_obj.plot_storm_nhc(forecast_dict,track_dict,track_labels,cone_days,domain,ax=ax,return_ax=return_ax,prop=prop,map_prop=map_prop)
         
         #Return axis
         if ax != None or return_ax == True: return plot_ax
+    
+    def plot_nrl_forecast(self,forecast,track_labels='fhr',cone_days=5,domain="dynamic_forecast",
+                          ax=None,return_ax=False,cartopy_proj=None,prop={},map_prop={}):
+
+        #Check to ensure the data source is HURDAT
+        if self.source != "nrlcotc":
+            raise RuntimeError("Error: NRL data can only be accessed when NRLCOTC is used as the data source.")
+        
+        #Create instance of plot object
+        try:
+            self.plot_obj
+        except:
+            self.plot_obj = NRLTrackPlot()
+        
+        #Create cartopy projection
+        if cartopy_proj == None:
+            if max(self.dict['lon']) > 140 or min(self.dict['lon']) < -140:
+                self.plot_obj.create_cartopy(proj='PlateCarree',central_longitude=180.0)
+            else:
+                self.plot_obj.create_cartopy(proj='PlateCarree',central_longitude=0.0)
+
+        if isinstance(forecast,int) == True:
+            advisory_num = forecast+0
+
+        forecast_dict = {}
+
+        forecast_dict['fhr'] = self.dict['fhr']
+        forecast_dict['lat'] = self.dict['lat']
+        forecast_dict['lon'] = self.dict['lon']
+        forecast_dict['vmax'] = self.dict['vmax']
+        forecast_dict['type'] = self.dict['type']
+        forecast_dict['mslp'] = self.dict['mslp']
+        forecast_dict['init'] = self.dict['date'][0]
+        forecast_dict['advisory_num'] = forecast
+        forecast_dict['basin'] = self.dict['wmo_basin'][0]
+
+        track_dict = {'lat':[],'lon':[],'vmax':[],'type':[],'mslp':[],'date':[],'extra_obs':[],'special':[],'ace':0.0}
+        #Add main elements from storm dict
+        for key in ['id','operational_id','name','year']:
+            track_dict[key] = self.dict[key]
+            
+        #Plot storm
+        plot_ax = self.plot_obj.plot_storm_nrl(forecast_dict,track_dict,track_labels,cone_days,domain,ax=ax,return_ax=return_ax,prop=prop,map_prop=map_prop)
+ 
+
+        #Return axis
+        #if ax != None or return_ax == True: return plot_ax
+        
+
         
     
     def list_nhc_discussions(self):
@@ -1037,7 +1083,7 @@ class Storm:
         #https://www.ftp.ncep.noaa.gov/data/nccf/com/ens_tracker/prod/
         
         #Check to ensure the data source is HURDAT
-        if self.source != "hurdat":
+        if self.source != "nrlcotc":
             msg = "NHC data can only be accessed when HURDAT is used as the data source."
             raise RuntimeError(msg)
             
@@ -1061,6 +1107,7 @@ class Storm:
             msg = "No NHC operational data is available for this storm."
             raise RuntimeError(msg)
 
+        """
         #Check if archive directory exists for requested year, if not redirect to realtime directory
         url_models = f"https://ftp.nhc.noaa.gov/atcf/archive/{storm_year}/a{storm_id.lower()}.dat.gz"
         if requests.get(url_models).status_code != 200:
@@ -1138,6 +1185,17 @@ class Storm:
                     if stype in ['','DB'] and vmax != 0 and np.isnan(vmax) == False:
                         stype = get_storm_type(vmax,False)
                     forecasts[model][run_init]['type'].append(stype)
+        """
+        forecasts = {}
+        model = ['COTC']
+        run_init = self.dict['run_init']
+        if model not in forecasts.keys(): forecasts[model] = {}
+        if run_init not in forecasts[model].keys(): 
+            forecasts[model][run_init] = {
+                'fhr':[],'lat':[],'lon':[],'vmax':[],'mslp':[],'type':[],'init':dt.strptime(run_init,'%Y%m%d%H')
+            }
+        print(forecasts)
+        raise SystemExit
 
         #Save dict locally
         self.forecast_dict = forecasts

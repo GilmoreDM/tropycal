@@ -492,6 +492,7 @@ class TrackPlot(Plot):
         map_prop : dict
             Property of cartopy map.
         """
+        print(forecast)
         
         #Determine if forecast is realtime
         realtime_flag = True if forecast['advisory_num'] == -1 else False
@@ -1112,9 +1113,10 @@ class TrackPlot(Plot):
         
         #Source: https://www.nhc.noaa.gov/verification/verify3.shtml
         #Radii are in nautical miles
-        cone_climo_hr = [3,12,24,36,48,72,96,120]
+        #cone_climo_hr = [3,12,24,36,48,72,96,120]
+        cone_climo_hr = [0,3,6,12,18,24,30,36,42,48,54,60]
         cone_size_atl = {}
-        cone_size_atl[2020] = [16,26,41,55,69,86,103,151,196]
+        cone_size_atl[2020] = [16,26,41,55,69,86,103,151,196,237,285,335]
         cone_size_atl[2019] = [16,26,41,54,68,102,151,198]
         cone_size_atl[2018] = [16,26,43,56,74,103,151,198]
         cone_size_atl[2017] = [16,29,45,63,78,107,159,211]
