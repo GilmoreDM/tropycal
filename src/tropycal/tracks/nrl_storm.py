@@ -514,9 +514,9 @@ class NRLStorm:
     def plot_nrl_forecast(self,forecast,image_path=os.getcwd,track_labels='fhr',cone_days=5,domain="dynamic_forecast",
                           ax=None,return_ax=False,cartopy_proj=None,prop={},map_prop={}):
 
-        #Check to ensure the data source is HURDAT
-        if self.source != "nrlcotc":
-            raise RuntimeError("Error: NRL data can only be accessed when NRLCOTC is used as the data source.")
+        #Check to ensure the data source is CTAZ
+        if self.source != "CTAZ":
+            raise RuntimeError("Error: NRL data can only be accessed when CTAZ is used as the data source.")
         
         #Create instance of plot object
         try:

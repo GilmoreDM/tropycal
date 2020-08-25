@@ -172,10 +172,10 @@ class NRLTrackDataset:
             self.__read_hurdat()
         elif source == 'ibtracs':
             self.__read_ibtracs()
-        elif source == 'nrlcotc':
+        elif source == 'CTAZ':
             self.__read_nrlcotc()
         else:
-            raise RuntimeError("Accepted values for 'source' are 'hurdat' or 'ibtracs' or 'nrlcotc'")
+            raise RuntimeError("Accepted values for 'source' are 'hurdat' or 'ibtracs' or 'CTAZ'")
             
         #Replace ibtracs with hurdat for atl/pac basins
         if source == 'ibtracs' and ibtracs_hurdat == True:
